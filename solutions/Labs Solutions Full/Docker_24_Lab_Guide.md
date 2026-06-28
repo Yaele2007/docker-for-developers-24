@@ -240,45 +240,50 @@ with a "toomanyrequests" message, run `docker login` first.
 ---
 
 ## Lab 7 — Tame a Container
-**~30 min · Goal:** Run a service that survives crashes, respects a memory cap, and lets you move files in and out.
+**~30 min · Goal:** Run a service that respects a memory cap, lets you move files in and out, and recovers from a crash on its own.
 
-1. Run a container with a restart policy:
-   ```bash
-   $ docker run -d --name web --restart=unless-stopped -p 8080:80 nginx
-   ```
-2. Add resource limits (re-create it to apply them) and watch usage:
-   ```bash
-   $ docker rm -f web
+1. Run the service with a restart policy and resource limits:
+```bash
    $ docker run -d --name web --restart=unless-stopped \
        --memory=256m --cpus=0.5 -p 8080:80 nginx
-   $ docker stats web        # Ctrl-C to exit
-   ```
-3. Kill the main process and watch the policy restart it:
-   ```bash
-   $ docker kill web
-   $ docker ps               # it comes back on its own
-   ```
-4. Copy a file in, then back out:
-   ```bash
+   $ docker stats web        # live CPU / memory (note the limits); Ctrl-C to exit
+```
+2. Watch a restart policy catch a **crash**. A policy reacts to a process that dies on
+   its own — *not* to a deliberate `docker stop`/`docker kill` (those are treated as
+   "you meant it"). So run a container that crashes itself:
+```bash
+   $ docker run -d --name crasher --restart=on-failure \
+       alpine sh -c 'echo up; sleep 5; echo crashing; exit 1'
+   $ docker ps                                       # crasher's uptime keeps resetting
+   $ docker inspect -f '{{.RestartCount}}' crasher   # climbs: 1, 2, 3 ...
+   $ docker logs crasher                             # repeated up / crashing
+```
+3. Copy a file into the running service, then one back out:
+```bash
    $ echo "<h1>Tamed</h1>" > index.html
    $ docker cp ./index.html web:/usr/share/nginx/html/index.html
    $ curl localhost:8080
    $ docker cp web:/etc/nginx/nginx.conf ./nginx.conf
-   ```
-5. Raise the memory limit live:
-   ```bash
+```
+4. Raise the memory limit live (no recreate needed):
+```bash
    $ docker update --memory=512m web
-   ```
+```
 
-**Expected result:** The container restarts after a kill, enforces its limits, and
-serves your copied-in file.
+**Expected result:** `web` serves your copied-in file and shows its caps in `docker stats`;
+`crasher`'s `RestartCount` keeps climbing as the policy restarts it.
 
-> **Stop & think:** You set a memory cap of 256m. If the app exceeds it, what does
-> Docker do — and how would `docker ps` / `docker logs` show you it happened?
+> **Stop & think:** `on-failure` restarted `crasher` because it exited non-zero — but a
+> restart policy will **not** bring a container back after you `docker stop` it. Why is
+> that difference deliberate, and which policy would also restart after a *clean*
+> (exit 0) shutdown?
 
-**Pitfall:** `--restart=always` will resurrect a container even after you think
-you've stopped it via the daemon restarting. Use `unless-stopped` so a deliberate
-`docker stop` actually sticks.
+**Pitfall:** `docker stop`/`docker kill` count as **manual** stops, so even `always` /
+`unless-stopped` won't restart from them — which is why this lab triggers a real crash
+instead. Use `unless-stopped` for services you want to survive reboots without
+overriding a deliberate stop.
+
+**Cleanup:** `docker rm -f web crasher`
 
 ---
 
