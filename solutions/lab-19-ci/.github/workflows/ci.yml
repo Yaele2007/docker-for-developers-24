@@ -1,0 +1,52 @@
+# Lab 19 solution — build, test, scan, push.
+# Place at: .github/workflows/ci.yml
+# Repo secrets required: DOCKERHUB_USERNAME, DOCKERHUB_TOKEN  (a Docker Hub access token)
+name: ci
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  build-test-scan-push:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the image
+        run: docker build -t myapp:${{ github.sha }} .
+
+      # Test the ACTUAL artifact, not just the source
+      - name: Test inside the image
+        run: docker run --rm myapp:${{ github.sha }} npm test
+
+      # Scan with Trivy and FAIL the build on HIGH/CRITICAL (no Docker Scout needed)
+      - name: Scan with Trivy
+        uses: aquasecurity/trivy-action@0.36.0
+        with:
+          image-ref: myapp:${{ github.sha }}
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: '1'
+
+      - name: Log in to Docker Hub
+        run: echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
+
+      - name: Tag and push
+        run: |
+          docker tag myapp:${{ github.sha }} levep79/myapp:${{ github.sha }}
+          docker tag myapp:${{ github.sha }} levep79/myapp:latest
+          docker push levep79/myapp:${{ github.sha }}
+          docker push levep79/myapp:latest
+
+# To use Docker Scout in CI instead of Trivy, replace the "Scan with Trivy" step with:
+#   - name: Docker Scout CVEs
+#     uses: docker/scout-action@v1
+#     with:
+#       command: cves
+#       image: myapp:${{ github.sha }}
+#       only-severity: critical,high
+#       exit-code: true
+#     env:
+#       DOCKER_SCOUT_HUB_USER: ${{ secrets.DOCKERHUB_USERNAME }}
+#       DOCKER_SCOUT_HUB_PASSWORD: ${{ secrets.DOCKERHUB_TOKEN }}

@@ -1,0 +1,32 @@
+# Final-project stack — app + database, healthcheck, ordered startup.
+# Lives in the course-app folder (api uses build: .).
+services:
+  api:
+    build: .
+    ports:
+      - "8080:3000"
+    environment:
+      APP_ENV: development
+      LOG_LEVEL: debug
+      DATABASE_URL: postgres://app:secret@db:5432/app   # user/pass/db match the db below
+    depends_on:
+      db:
+        condition: service_healthy
+    # No healthcheck needed here if the image already defines one (it does — see Dockerfile.production).
+
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: secret
+      POSTGRES_DB: app
+    volumes:
+      - appdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U app -d app"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  appdata: {}
