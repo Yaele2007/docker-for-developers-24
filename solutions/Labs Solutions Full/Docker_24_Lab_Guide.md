@@ -38,6 +38,121 @@ Also: create a **Docker Hub** account (or have your private registry credentials
 ## Demo 1 (instructor) — Your first container
 The instructor runs `docker run alpine echo "hello"` and `docker run -it alpine sh`, narrating what the client sends to the daemon, what gets pulled, and what "interactive" means. Watch; you will do this yourself in Lab 2.
 
+# Demo (instructor) — Namespaces & cgroups, live
+
+**~20 min · instructor-led · Day 1 (Architecture module)**
+
+**Goal:** See isolation and limits with your own eyes — not just on a slide.
+
+The point to land: a container is *just a Linux process* that the **kernel** has
+isolated (namespaces) and limited (cgroups). Commands below are written to be robust
+across setups; read the Docker Desktop / Rancher Desktop caveats before class.
+
+## One-time prep
+
+```bash
+docker pull alpine          # so the demo doesn't stall on a pull mid-talk
+```
+
+## Step 1 — Namespaces: own process tree & hostname
+
+```bash
+docker run -dit --name iso alpine sh
+
+# inside the container:
+docker exec iso ps               # ~2 processes; PID 1 is 'sh'
+docker exec iso hostname         # a random 12-hex id (the container id)
+
+# on your machine, for contrast:
+hostname                         # your real host name
+ps -e | wc -l                    # dozens / hundreds of processes
+```
+
+**Expected:** the container sees ~2 processes with **PID 1 = sh**; the host sees many.
+Different hostnames.
+
+**Say:** "Same kernel, but the container has its *own view* — its own process tree (PID
+namespace) and its own hostname (UTS namespace). PID 1 inside is just our `sh`, not the
+host's init."
+
+## Step 2 — Drop the PID namespace and isolation disappears
+
+```bash
+docker run --rm --pid=host alpine ps      # now shows the HOST's processes — lots of them
+```
+
+**Expected:** a long list instead of ~2.
+
+**Say:** "Same image, same `ps` — the only change is `--pid=host`, which tells Docker
+*not* to give it a private PID namespace. The isolation was never magic; it was one
+kernel feature, and we just turned it off."
+
+> ⚠️ **Docker Desktop / Rancher Desktop:** your "host" is the Linux **VM** the engine
+> runs in, not your Mac/Windows. `--pid=host` shows the VM's processes (still clearly
+> "lots," so the point lands). On native Linux it's the real host.
+
+```bash
+docker run -d --name hog --cpus=0.5 alpine sh -c 'yes > /dev/null'   # a tight CPU loop
+docker stats hog        # CPU% sits around 50%   (Ctrl-C to exit)
+docker rm -f hog
+```
+
+**Expected:** `yes` would peg a whole core, but `docker stats` shows it pinned near
+**~50%** (100% = one full core).
+
+**Say:** "The process *wants* a whole core. The kernel's CPU cgroup won't let it have
+more than half. That's `--cpus` in action."
+
+## Step 4 — cgroups: hit the memory limit, get OOM-killed
+
+```bash
+docker run --name oom --memory=64m --memory-swap=64m alpine tail /dev/zero
+#   tail /dev/zero buffers infinite input -> memory climbs past 64m -> kernel OOM-kills it
+echo $?                                                  # 137  (128 + 9 = SIGKILL)
+docker inspect -f '{{.State.OOMKilled}} {{.State.ExitCode}}' oom   # true 137
+docker rm oom
+```
+
+**Expected:** the run ends almost immediately; exit code **137**, `OOMKilled = true`.
+
+**Say:** "It tried to use unbounded memory. The memory cgroup capped it at 64 MB and the
+kernel killed it — exit 137 is the SIGKILL signature. `--memory` is enforced by the
+kernel, not by Docker politely asking."
+
+> Setting `--memory-swap=64m` equal to `--memory` disables swap, so the OOM is immediate
+> and deterministic. Without it, Docker gives the container swap room and the kill is
+> delayed/flaky — exactly the "works sometimes" behaviour to avoid in a live demo.
+
+
+## The reveal — Stop & think answer
+
+> *"If a container is just a process, what's actually doing the isolating?"*
+
+**The Linux kernel.** There is no "container" object in the kernel. Docker (via
+containerd → runc) starts an ordinary process and asks the kernel to apply two families
+of features to it:
+
+- **Namespaces = what it can *see*** — its own PID tree, hostname, network, mounts,
+  users. (Steps 1–2)
+- **cgroups = what it can *use*** — CPU, memory, I/O quotas. (Steps 3–4)
+
+Take the namespace away (`--pid=host`) and the isolation vanishes; set a cgroup limit
+and the kernel enforces it. "Container" is just shorthand for "a process the kernel has
+isolated and limited."
+
+
+## Cleanup
+
+```bash
+docker rm -f iso 2>/dev/null
+```
+
+## Pre-class check
+Dry-run all four steps on your actual setup (Rancher Desktop / Moby engine) before
+class — especially Step 4's OOM, which is the most environment-sensitive. If
+`tail /dev/zero` doesn't trip the OOM on your box, use an alternate memory bomb, e.g.
+`alpine sh -c 'cat /dev/zero | head -c 200m | tail'` or a small `dd` into tmpfs.
+
 ---
 
 ## Lab 1 — Install Check
