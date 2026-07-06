@@ -4,6 +4,7 @@
   "private": true,
   "description": "Course app for Docker & Containers for Developers (NAYA College)",
   "scripts": {
+    "build": "mkdir -p dist && cp server.js dist/server.js",
     "start": "node server.js",
     "test": "node test.js"
   }

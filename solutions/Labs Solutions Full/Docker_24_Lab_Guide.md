@@ -543,7 +543,7 @@ The instructor pulls `node:20-alpine`, runs `docker history` to show per-layer s
 ---
 
 ## Lab 11 — Build Your First Image
-**~60 min · Goal:** Write a Dockerfile for the course app and build it into a runnable image.
+**~20 min · Goal:** Write a Dockerfile for the course app and build it into a runnable image.
 
 1. In the app folder, create a `Dockerfile`:
    ```dockerfile
@@ -577,7 +577,7 @@ The instructor pulls `node:20-alpine`, runs `docker history` to show per-layer s
 
 ---
 
-## Lab 7 — Refine the Image
+## Lab 12 — Refine the Image
 **~35 min · Goal:** Tighten the image with `.dockerignore`, `ENTRYPOINT`, and cleaner layers.
 
 1. Add a `.dockerignore`:
@@ -605,8 +605,8 @@ The instructor pulls `node:20-alpine`, runs `docker history` to show per-layer s
 
 ---
 
-## Lab 8 — Multi-Stage Build
-**~45 min · Goal:** Slim a fat image dramatically with a multi-stage build.
+## Lab 13 — Multi-Stage Build
+**~20 min · Goal:** Slim a fat image dramatically with a multi-stage build.
 
 1. Build the single-stage image and record its size (`docker image ls`).
 2. Rewrite the Dockerfile with a build stage and a runtime stage:
@@ -634,24 +634,137 @@ The instructor pulls `node:20-alpine`, runs `docker history` to show per-layer s
 
 ---
 
-## Lab 9 — Containerize the Course App
-**~40 min · Goal:** Produce the production image you will use for the rest of the course.
+# Lab 14 — Containerize the Course App · Full Solution
 
-1. Choose an appropriate **slim** base image for your language.
-2. Structure for layer caching: dependencies before source.
-3. Read all config from environment variables (no hard-coded URLs/secrets).
-4. Use a multi-stage build if the app has a build/compile step.
-5. Build, tag (`myapp:0.1`), run, and verify.
+**~20 min · Goal:** Produce the production image we'll use for the rest of the course.
 
-**Expected result:** A clean, runnable production image — your final-project starting point.
-
-> **Stop & think:** This image is your deliverable on Day 3. What would make it (a) faster to rebuild and (b) safer to ship? Write it down now.
-
-**Pitfall:** Baking environment-specific values (a prod database URL, an API key) into the image. Keep the image generic; inject config at run time.
+> Prereq: the course app source in `app/` (no Dockerfile yet — you write it here).
+> This is the image the Final Project builds on.
 
 ---
 
-## Lab 10 — Database with a Volume
+## The solution, step by step
+
+### 1. Choose an appropriate slim base image
+
+`node:20-alpine` — a current LTS Node on Alpine. Small, and pinned to a major
+version (never `:latest`, which is a moving target).
+
+### 2. Structure for layer caching (deps before source)
+
+Copy the dependency manifest and install **before** copying the source. Then a change
+to your code doesn't invalidate the (expensive) `npm ci` layer.
+
+### 3. Read config from environment variables
+
+The app already reads `PORT`, `APP_ENV`, and `LOG_LEVEL` from the environment — so the
+image stays generic and gets configured at run time, not baked in.
+
+### 4. Multi-stage *only if the app needs a build step*
+
+This app has **no build step** (zero-dependency Node), so the honest production image is
+**single-stage**. Multi-stage earns its keep when there's a compile/bundle step to leave
+behind (see Lab 13 for the technique). Don't add a second stage just because you can.
+
+### 5. Build, tag, run, verify — see commands below.
+
+## `app/Dockerfile`
+
+```dockerfile
+# Production image for the course app.
+# Single stage on purpose: this app has no build/compile step to isolate.
+FROM node:20-alpine
+
+WORKDIR /app
+
+# Dependencies first — this layer is cached until package*.json changes
+COPY package*.json ./
+RUN npm ci --omit=dev
+
+# Then the source — editing code won't bust the dependency layer above
+COPY --chown=node:node . .
+
+ENV NODE_ENV=production
+EXPOSE 3000
+
+# Drop root before the app runs
+USER node
+
+# Let Docker/Compose know when the app is actually ready (not just started)
+HEALTHCHECK --interval=10s --timeout=3s --start-period=5s \
+  CMD node -e "require('http').get('http://localhost:3000/health',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"
+
+CMD ["node", "server.js"]
+```
+
+## `app/.dockerignore`
+
+Keeps the build context small and secrets/junk out of the image:
+
+```
+node_modules
+.git
+*.log
+.env
+dist
+```
+
+## Build, tag, run, verify
+
+```bash
+cd app
+
+# build + tag with a version
+docker build -t myapp:1.0 .
+
+# run it, published on 8080 -> 3000
+docker run -d --name app -p 8080:3000 myapp:1.0
+
+# verify it serves and is healthy
+curl localhost:8080
+curl localhost:8080/health                       # {"status":"ok",...}
+docker ps                                         # STATUS shows "(healthy)" after ~5-10s
+
+# prove it's not running as root
+docker exec app whoami                            # -> node
+
+# see the image size (slim base + prod-only deps)
+docker image ls myapp:1.0
+```
+
+**Expected result:** a small image that serves `/`, reports healthy, and runs as the
+non-root `node` user.
+
+## 💡 Stop & think — answer
+
+> *"This image is your deliverable for the final project. What would you change to make
+> it (a) faster to rebuild and (b) safer to ship?"*
+
+- **Faster to rebuild** — put the *least-volatile* layers first: `COPY package*.json` +
+  `npm ci` **before** `COPY . .`. A code edit then reuses the cached dependency layer
+  instead of reinstalling every build. (Combining related `RUN` steps with `&&` and a
+  good `.dockerignore` help too.)
+- **Safer to ship** — `USER node` (don't run as root), `npm ci --omit=dev` (no dev
+  tooling in the image), a **slim, pinned** base (`node:20-alpine`, not `:latest`), no
+  secrets or environment-specific config baked in (inject at run time), and a
+  `HEALTHCHECK` so orchestrators know when it's truly ready.
+
+## ⚠ Pitfalls
+
+- **Baking config into the image.** Keep it generic; pass `APP_ENV`, `PORT`, etc. at run
+  time with `-e` / `--env-file`. An image hard-wired to "staging" can't be promoted to prod.
+- **Copying `node_modules` from the host.** Without `.dockerignore` you'd ship your
+  laptop's modules (wrong architecture, bloated). Let `npm ci` build them in the image.
+- **Forgetting `--chown`.** Copying as root then switching to `USER node` can leave files
+  the app can't write; `COPY --chown=node:node` avoids surprise permission errors.
+- **Reaching for multi-stage here.** This app has nothing to compile, so a second stage
+  adds complexity for no gain. Use it (Lab 13) when there's a real build artifact.
+
+*Reference file in the repo: `solutions/lab-14-production/Dockerfile`.*
+
+---
+
+## Lab 15 — Database with a Volume
 **~50 min · Goal:** Run a real database and prove its data survives a container's death.
 
 1. Run Postgres with a **named volume** for its data directory:
@@ -686,7 +799,7 @@ The instructor pulls `node:20-alpine`, runs `docker history` to show per-layer s
 
 ---
 
-## Lab 11 — Multi-Container Network
+## Lab 16 — Multi-Container Network
 **~55 min · Goal:** Wire two containers together so they talk **by name** on a private network.
 
 1. Create a user-defined network:
@@ -726,7 +839,7 @@ The instructor brings up a provided `compose.yaml` (app + db + cache) with `dock
 
 ---
 
-## Lab 12 — Extend the Stack
+## Lab 17 — Extend the Stack
 **~40 min · Goal:** Add the course app to a Compose stack and make startup robust.
 
 1. Start from this `compose.yaml`:
@@ -764,7 +877,7 @@ The instructor brings up a provided `compose.yaml` (app + db + cache) with `dock
 
 ---
 
-## Lab 13 — Tag & Push
+## Lab 18 — Tag & Push
 **~40 min · Goal:** Publish your course-app image the way CI will.
 
 1. Log in: `docker login`.
@@ -791,7 +904,7 @@ The instructor brings up a provided `compose.yaml` (app + db + cache) with `dock
 
 ---
 
-## Lab 14 — Build–Test–Push Pipeline
+## Lab 19 — Build–Test–Push Pipeline
 **~50 min · Goal:** Wire a CI pipeline that builds your image, tests it, and pushes it.
 
 1. Add a workflow (GitHub Actions example) at `.github/workflows/ci.yml`:
@@ -823,7 +936,7 @@ The instructor brings up a provided `compose.yaml` (app + db + cache) with `dock
 
 ---
 
-## Lab 15 — Scan & Harden
+## Lab 20 — Scan & Harden
 **~45 min · Goal:** Find real vulnerabilities in your image and reduce them.
 
 1. Get a summary:
@@ -853,7 +966,7 @@ The instructor brings up a provided `compose.yaml` (app + db + cache) with `dock
 
 ---
 
-## Lab 16 — Secrets & Least Privilege
+## Lab 21 — Secrets & Least Privilege
 **~35 min · Goal:** Take a hardened image further — keep a build secret out of the layers and lock down how the container runs.
 
 > **Prerequisite:** start from your Lab 9 / Lab 15 production image.
@@ -908,7 +1021,7 @@ or a volume on exactly the paths that need to be writable.
 
 ---
 
-## Lab 17 — Observe & Troubleshoot a Stack
+## Lab 22 — Observe & Troubleshoot a Stack
 **~30 min · Goal:** Diagnose a misbehaving multi-container app with a method, not a guess.
 
 > **Prerequisite:** the broken Compose stack (lives in `demos/troubleshoot/`). It
