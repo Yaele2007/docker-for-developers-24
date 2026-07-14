@@ -1,0 +1,24 @@
+name: ci
+on:
+  workflow_dispatch:        # manual trigger — run it from the Actions tab
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # build context and Dockerfile live in ./app
+      - name: Build
+        run: docker build -t myapp:${{ github.sha }} ./app
+
+      - name: Test
+        run: docker run --rm myapp:${{ github.sha }} npm test
+
+      - name: Log in to Docker Hub
+        run: echo "${{ secrets.REGISTRY_TOKEN }}" | docker login -u "${{ secrets.REGISTRY_USER }}" --password-stdin
+
+      - name: Tag & push
+        run: |
+          docker tag myapp:${{ github.sha }} Yaele2007/myapp:${{ github.sha }}
+          docker push levep79/myapp:${{ github.sha }}
